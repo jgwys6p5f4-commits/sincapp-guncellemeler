@@ -28,9 +28,13 @@ if (Test-Path $exe) {
 } else {
   Ekle "SincApp bu kullanicida kurulu degil ($exe yok)"
 }
-# Başka yerlerde kopya var mı (elle kopyalanmış/eski kurulum)
-$diger = @("$env:ProgramFiles\SincApp\SincApp.exe", "${env:ProgramFiles(x86)}\SincApp\SincApp.exe") | Where-Object { Test-Path $_ }
-foreach ($d in $diger) { Ekle "Baska kopya: $d  surum $((Get-Item $d).VersionInfo.ProductVersion)" }
+# "Tüm kullanıcılar için" (Program Files) kurulumu: güncellemesi yönetici onayı
+# ister, sessiz otomatik güncelleme alamaz → kullanıcıya özel kuruluma taşınır
+$pmKlasor = @("$env:ProgramFiles\SincApp", "${env:ProgramFiles(x86)}\SincApp") | Where-Object { Test-Path (Join-Path $_ 'SincApp.exe') } | Select-Object -First 1
+if ($pmKlasor) {
+  Ekle "!!! 'Tum kullanicilar' kurulumu: $pmKlasor  surum $((Get-Item (Join-Path $pmKlasor 'SincApp.exe')).VersionInfo.ProductVersion)"
+  Ekle "    (Program Files kurulumu sessiz otomatik guncelleme alamaz — kullaniciya ozel kuruluma tasinacak)"
+}
 # Uygulamanın eski adıyla ("Sigorta RDP") yapılmış kurulum: ayrı bir uygulama
 # olarak duruyor ve hiç güncellenmiyor
 $eskiKlasor = Join-Path $env:LOCALAPPDATA 'Programs\Sigorta RDP'
@@ -74,6 +78,7 @@ if ($sonSurum) {
   if (-not $kurulu) { $gerekli = $true }
   elseif ([version]$kurulu -lt [version]$sonSurum) { $gerekli = $true }
   elseif ($repoSatir -notmatch 'sincapp-guncellemeler') { $gerekli = $true }
+  if ($pmKlasor) { $gerekli = $true }
 }
 if ($gerekli -and $SadeceRapor) {
   Ekle ""
@@ -86,13 +91,33 @@ if ($gerekli -and $SadeceRapor) {
     Invoke-WebRequest "https://github.com/$REPO/releases/download/v$sonSurum/$sonDosya" -OutFile $hedef -UseBasicParsing -TimeoutSec 900
     Get-Process SincApp -ErrorAction SilentlyContinue | Stop-Process -Force
     Start-Sleep -Seconds 2
-    Ekle ">>> Kuruluyor..."
-    $p = Start-Process $hedef -ArgumentList '/S' -PassThru -Wait
+    if ($pmKlasor) {
+      Ekle ">>> 'Tum kullanicilar' kurulumu kaldiriliyor — ekranda YONETICI ONAYI (Evet) istenecek..."
+      $kaldirici = Get-ChildItem $pmKlasor -Filter 'Uninstall*.exe' | Select-Object -First 1
+      $komut = ""
+      if ($kaldirici) { $komut += "Start-Process -FilePath '$($kaldirici.FullName)' -ArgumentList '/S','/allusers' -Wait; Start-Sleep -Seconds 3; " }
+      $komut += "Remove-Item -LiteralPath '$env:PUBLIC\Desktop\SincApp.lnk' -Force -ErrorAction SilentlyContinue; "
+      $komut += "Remove-Item -LiteralPath '$env:ProgramData\Microsoft\Windows\Start Menu\Programs\SincApp.lnk' -Force -ErrorAction SilentlyContinue; "
+      $komut += "Remove-Item -LiteralPath '$pmKlasor' -Recurse -Force -ErrorAction SilentlyContinue"
+      try {
+        Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile', '-Command', $komut
+      } catch { Ekle "!!! Yonetici onayi verilmedi — eski kurulum yerinde kaldi" }
+      if (Test-Path (Join-Path $pmKlasor 'SincApp.exe')) { Ekle "!!! Program Files kurulumu kaldirilamadi" } else { Ekle ">>> Eski 'tum kullanicilar' kurulumu kaldirildi" }
+    }
+    Ekle ">>> Kuruluyor (bu kullanici icin)..."
+    $p = Start-Process $hedef -ArgumentList '/S', '/currentuser' -PassThru -Wait
     Start-Sleep -Seconds 2
     $yeni = (Get-Item $exe).VersionInfo.ProductVersion -replace '\.0$', ''
-    if ($yeni -eq $sonSurum) { Ekle ">>> TAMAM: SincApp $yeni kuruldu. Bundan sonra acilista kendiliginden guncellenecek." }
+    if ($yeni -eq $sonSurum) {
+      $kisayol = Join-Path ([Environment]::GetFolderPath('Desktop')) 'SincApp.lnk'
+      if (-not (Test-Path $kisayol)) {
+        $k = $sh.CreateShortcut($kisayol); $k.TargetPath = $exe; $k.WorkingDirectory = $klasor; $k.Save()
+        Ekle ">>> Masaustune SincApp kisayolu olusturuldu"
+      }
+      Ekle ">>> TAMAM: SincApp $yeni kuruldu. Bundan sonra acilista kendiliginden guncellenecek."
+    }
     else { Ekle "!!! Kurulumdan sonra surum $yeni gorunuyor (beklenen $sonSurum), cikis kodu $($p.ExitCode)" }
-    Remove-Item $hedef -Force
+    Remove-Item -LiteralPath $hedef -Force -ErrorAction SilentlyContinue
   } catch { Ekle "!!! Indirme/kurulum hatasi: $($_.Exception.Message)" }
 } elseif ($sonSurum) {
   Ekle ""
